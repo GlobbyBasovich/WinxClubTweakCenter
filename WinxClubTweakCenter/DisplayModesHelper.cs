@@ -89,6 +89,8 @@ namespace WinxClubTweakCenter
 
         public struct Resolution
         {
+            public const int MaximumStringLength = 0xC;
+
             public Size Size;
 
             public Resolution(Size size)
@@ -96,9 +98,16 @@ namespace WinxClubTweakCenter
                 Size = size;
             }
 
-            public override string ToString()
+            public override string ToString() => $"{Size.Width} X {Size.Height}";
+        }
+        public struct ResolutionOffsetPair
+        {
+            public int WidthOffset, HeightOffset;
+
+            public ResolutionOffsetPair(int widthOffset, int heightOffset)
             {
-                return $"{Size.Width} X {Size.Height}";
+                WidthOffset = widthOffset;
+                HeightOffset = heightOffset;
             }
         }
 

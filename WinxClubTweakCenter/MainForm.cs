@@ -1,173 +1,310 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Drawing;
-using System.IO;
-using System.Windows.Forms;
-using System.Diagnostics;
 using System.ComponentModel;
+using System.Diagnostics;
+using System.Drawing;
 using System.Globalization;
+using System.IO;
+using System.Linq;
+using System.Security.Principal;
+using System.Text;
+using System.Windows.Forms;
 
 namespace WinxClubTweakCenter
 {
+    using static DisplayModesHelper;
+
     public partial class MainForm : Form
     {
-        private string doneMessage = "Done!";
         private string helpText;
+        private string errorCaption = "Error";
+        private string warningCaption = "Warning";
+        private string infoCaption = "Info";
+        private string folderErrorMessage = "Selected folder is not valid Winx Club The Game folder";
+        private string dataInconsistencyWarningMessage = "Data inconsistency detected. If you proceed, data in chosen folder may be corrupted";
+        private string resolutionWarningMessage = "Unsupported resolution detected. Resolution will be set to default";
+        private string versionInfoMessage = "Old tweaks detected. They will be updated";
+        private string doneMessage = "Done!";
 
-        private readonly string folderToApply;
-        private readonly bool[] tweaks;
-        private readonly int resolutionIndex;
-        public MainForm(string folderToApply, bool[] tweaks, int resolutionIndex)
+        private Resolution vanillaResolution = new Resolution(new Size(1024, 768));
+
+        private FileInfo executableInfo;
+        private FileInfo winxIniInfo;
+        private FileInfo playerSptInfo;
+        private FileInfo star01SptInfo;
+        private FileInfo star02SptInfo;
+        private FileInfo star03SptInfo;
+
+        private readonly string mode;
+        private string gameFolder;
+        private bool[] tweaks, currentFolderTweaks;
+        private int resolutionIndex = -1, currentFolderResolutionIndex = -1;
+        private readonly Size passedResolutionSize;
+
+        public MainForm(string mode, string gameFolder, bool[] tweaks, Size resolutionSize)
         {
-            this.folderToApply = folderToApply;
+            this.mode = mode;
+            UpdateGameFolder(gameFolder);
             this.tweaks = tweaks;
-            this.resolutionIndex = resolutionIndex;
+            passedResolutionSize = resolutionSize;
             InitializeComponent();
         }
 
-        private void Apply(string gameFolder)
+        private void UpdateGameFolder(string path)
         {
-            byte[] buffer;
-            using (var bw = new BinaryWriter(new FileStream($@"{gameFolder}\WinxClub.exe", FileMode.Open)))
+            if (Directory.Exists(path))
             {
-                var resolution = new DisplayModesHelper.Resolution(new Size(1024, 768));
+                gameFolder = path;
+                executableInfo = new FileInfo($@"{gameFolder}\WinxClub.exe");
+                winxIniInfo = new FileInfo($@"{gameFolder}\winx.ini");
+                playerSptInfo = new FileInfo($@"{gameFolder}\Media\Characters\Bloom\Player.spt");
+                var challengesPath = $@"{gameFolder}\Media\Levels\Challenges";
+                star01SptInfo = new FileInfo($@"{challengesPath}\star_01.spt");
+                star02SptInfo = new FileInfo($@"{challengesPath}\star_02.spt");
+                star03SptInfo = new FileInfo($@"{challengesPath}\star_03.spt");
+            }
+        }
+
+        private void UpdateInputResolution()
+        {
+            if (inputResolution.Items.Contains(vanillaResolution))
+                inputResolution.Items.Remove(vanillaResolution);
+            if (checkBoxResolution.Checked)
+            {
+                inputResolution.Enabled = true;
+                inputResolution.SelectedIndex = resolutionIndex;
+            }
+            else
+            {
+                inputResolution.Enabled = false;
+                resolutionIndex = inputResolution.SelectedIndex;
+                inputResolution.SelectedIndex = inputResolution.Items.Add(vanillaResolution);
+            }
+        }
+
+        private bool EnsureAuthorizedAccess(FileAccess access, string modeForRestart)
+        {
+            try
+            {
+                executableInfo.Open(FileMode.Open, access).Dispose();
+            }
+            catch (UnauthorizedAccessException uaex)
+            {
+                if (WindowsIdentity.GetCurrent().Owner.IsWellKnown(WellKnownSidType.BuiltinAdministratorsSid))
+                    throw uaex;
+
+                var resolutionString = "-";
+                if (inputResolution.SelectedIndex > -1)
+                {
+                    var resolution = (Resolution)inputResolution.SelectedItem;
+                    resolutionString = $"{resolution.Size.Width}x{resolution.Size.Height}";
+                }
+                var processStartInfo = new ProcessStartInfo(System.Reflection.Assembly.GetExecutingAssembly().GetName().Name)
+                {
+                    Verb = "runas",
+                    Arguments = $"{modeForRestart} " +
+                    $"\"{gameFolder}\" " +
+                    $"{Convert.ToByte(checkBoxResolution.Checked)}" +
+                    $"{Convert.ToByte(checkBoxFirstPersonMovement.Checked)}" +
+                    $"{Convert.ToByte(checkBoxFirstPersonAnywhere.Checked)}" +
+                    $"{Convert.ToByte(checkBoxLookingUp.Checked)}" +
+                    $"{Convert.ToByte(checkBoxSkipLogos.Checked)}" +
+                    $"{Convert.ToByte(checkBoxStarChallenges.Checked)}" +
+                    $"{Convert.ToByte(checkBoxFlight.Checked)}" +
+                    $" {resolutionString}"
+                };
+                try
+                {
+                    Process.Start(processStartInfo);
+                    Application.Exit();
+                }
+                catch (Win32Exception w32ex)
+                {
+                    if (w32ex.ErrorCode != unchecked((int)0x80004005))
+                        throw w32ex;
+                }
+                return false;
+            }
+            return true;
+        }
+
+        private bool ExamineGameFolder()
+        {
+            if (!executableInfo.Exists || executableInfo.Length < 22065152 ||
+                !playerSptInfo.Exists || playerSptInfo.Length < 9773 ||
+                !star01SptInfo.Exists || star01SptInfo.Length < 18352 ||
+                !star02SptInfo.Exists || star02SptInfo.Length < 12513 ||
+                !star03SptInfo.Exists || star03SptInfo.Length < 39907)
+            {
+                MessageBox.Show(folderErrorMessage, errorCaption, MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return false;
+            }
+
+            if (!EnsureAuthorizedAccess(FileAccess.Read, "examine"))
+                return false;
+
+            currentFolderTweaks = new bool[tweaks.Length];
+            Patch.ExamineCurrentDataResult examineResult;
+
+            using (var reader = new BinaryReader(executableInfo.OpenRead()))
+            {
+                if (!Patches.TryGetCurrentResolution(reader, out var resolution))
+                    goto inconsistencyDetected;
+                if (resolution.Size != vanillaResolution.Size)
+                {
+                    if (!inputResolution.Items.Contains(resolution))
+                    {
+                        MessageBox.Show(resolutionWarningMessage, warningCaption, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    }
+                    else
+                    {
+                        currentFolderTweaks[0] = true;
+                        currentFolderResolutionIndex = inputResolution.Items.IndexOf(resolution);
+                    }
+                }
+
+                var version = LegacyHelper.GetAllowFirstPersonMovementVersion(reader);
+                if (version == LegacyHelper.Version.Unknown)
+                    goto inconsistencyDetected;
+                else if (version == LegacyHelper.Version.V1_0)
+                    MessageBox.Show(versionInfoMessage, infoCaption, MessageBoxButtons.OK, MessageBoxIcon.Information);
+                currentFolderTweaks[1] = version != LegacyHelper.Version.Vanilla;
+
+                examineResult = Patches.AllowFirstPersonAnywhere.ExamineCurrentData(reader);
+                if (examineResult == Patch.ExamineCurrentDataResult.Unknown)
+                    goto inconsistencyDetected;
+                currentFolderTweaks[2] = examineResult == Patch.ExamineCurrentDataResult.Tweak;
+
+                examineResult = Patches.EnableFlight.ExamineCurrentData(reader);
+                if (examineResult == Patch.ExamineCurrentDataResult.Unknown)
+                    goto inconsistencyDetected;
+                currentFolderTweaks[currentFolderTweaks.Length - 1] = examineResult == Patch.ExamineCurrentDataResult.Tweak;
+            }
+
+            using (var reader = new BinaryReader(playerSptInfo.OpenRead()))
+            {
+                examineResult = Patches.AllowLookingUp.ExamineCurrentData(reader);
+                if (examineResult == Patch.ExamineCurrentDataResult.Unknown)
+                    goto inconsistencyDetected;
+                currentFolderTweaks[3] = examineResult == Patch.ExamineCurrentDataResult.Tweak;
+            }
+
+            currentFolderTweaks[4] = Patches.ExamineSkipLogos(winxIniInfo) == Patch.ExamineCurrentDataResult.Tweak;
+
+            var tweakedStarChallengesCount = 0;
+            using (var reader = new BinaryReader(star01SptInfo.OpenRead()))
+            {
+                examineResult = Patches.AddTimeInStar01Challenge.ExamineCurrentData(reader);
+                if (examineResult == Patch.ExamineCurrentDataResult.Unknown)
+                    goto inconsistencyDetected;
+                if (examineResult == Patch.ExamineCurrentDataResult.Tweak)
+                    tweakedStarChallengesCount++;
+            }
+            using (var reader = new BinaryReader(star02SptInfo.OpenRead()))
+            {
+                examineResult = Patches.AddTimeInStar02Challenge.ExamineCurrentData(reader);
+                if (examineResult == Patch.ExamineCurrentDataResult.Unknown)
+                    goto inconsistencyDetected;
+                if (examineResult == Patch.ExamineCurrentDataResult.Tweak)
+                    tweakedStarChallengesCount++;
+            }
+            using (var reader = new BinaryReader(star03SptInfo.OpenRead()))
+            {
+                examineResult = Patches.AddTimeInStar03Challenge.ExamineCurrentData(reader);
+                if (examineResult == Patch.ExamineCurrentDataResult.Unknown)
+                    goto inconsistencyDetected;
+                if (examineResult == Patch.ExamineCurrentDataResult.Tweak)
+                    tweakedStarChallengesCount++;
+            }
+            if (tweakedStarChallengesCount == 0)
+                currentFolderTweaks[5] = false;
+            else if (tweakedStarChallengesCount == 3)
+                currentFolderTweaks[5] = true;
+            else
+                goto inconsistencyDetected;
+
+            decorGameFolder.Text = gameFolder;
+            containerTweaks.Enabled = buttonApply.Enabled = true;
+            goto doneReading;
+        inconsistencyDetected:
+            MessageBox.Show(dataInconsistencyWarningMessage, warningCaption, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        doneReading:
+            return true;
+        }
+
+        private void LoadSettings()
+        {
+            checkBoxResolution.Checked = tweaks[0];
+            if (resolutionIndex >= -1 && resolutionIndex < inputResolution.Items.Count)
+                inputResolution.SelectedIndex = resolutionIndex;
+            UpdateInputResolution();
+            checkBoxFirstPersonMovement.Checked = tweaks[1];
+            checkBoxFirstPersonAnywhere.Checked = tweaks[2];
+            checkBoxLookingUp.Checked = tweaks[3];
+            checkBoxSkipLogos.Checked = tweaks[4];
+            checkBoxStarChallenges.Checked = tweaks[5];
+            checkBoxFlight.Checked = tweaks[6];
+        }
+
+        private void PickGameFolder()
+        {
+            var dialog = new FolderPicker();
+            if (dialog.ShowDialog() != DialogResult.OK)
+                return;
+            var previousGameFolder = gameFolder;
+            UpdateGameFolder(dialog.SelectedPath);
+
+            if (!ExamineGameFolder())
+            {
+                UpdateGameFolder(previousGameFolder);
+                return;
+            }
+
+            tweaks = currentFolderTweaks;
+            if (currentFolderResolutionIndex != -1)
+                resolutionIndex = currentFolderResolutionIndex;
+            LoadSettings();
+        }
+
+        private void Apply()
+        {
+            if (!EnsureAuthorizedAccess(FileAccess.Write, "apply"))
+                return;
+
+            using (var writer = new BinaryWriter(executableInfo.OpenWrite()))
+            {
+                var resolution = vanillaResolution;
                 if (checkBoxResolution.Checked)
-                    resolution = (DisplayModesHelper.Resolution)inputResolution.SelectedItem;
-                bw.Seek(0xD5E5, SeekOrigin.Begin);
-                bw.Write(resolution.Size.Width);
-                bw.Seek(0xD5EC, SeekOrigin.Begin);
-                bw.Write(resolution.Size.Height);
-                bw.Seek(0xD617, SeekOrigin.Begin);
-                bw.Write(resolution.Size.Width);
-                bw.Seek(0xD61E, SeekOrigin.Begin);
-                bw.Write(resolution.Size.Height);
-                bw.Seek(0x53BD1, SeekOrigin.Begin);
-                bw.Write(resolution.Size.Width);
-                bw.Seek(0x53BD8, SeekOrigin.Begin);
-                bw.Write(resolution.Size.Height);
-                bw.Seek(0xC2681, SeekOrigin.Begin);
-                bw.Write(resolution.Size.Width);
-                bw.Seek(0xC2689, SeekOrigin.Begin);
-                bw.Write(resolution.Size.Height);
-                bw.Seek(0xE7777, SeekOrigin.Begin);
-                bw.Write(resolution.Size.Width);
-                bw.Seek(0xE777F, SeekOrigin.Begin);
-                bw.Write(resolution.Size.Height);
-                bw.Seek(0x30ED8C, SeekOrigin.Begin);
-                bw.Write($"{resolution}\0".ToCharArray());
+                    resolution = (Resolution)inputResolution.SelectedItem;
+                foreach (var patch in Patches.GetResolutionPatches(resolution))
+                    patch.Apply(writer);
 
-                buffer = new byte[] { 0x89, 0x86, 0x9C, 0x02, 0x00, 0x00 };
-                if (checkBoxFirstPersonMovement.Checked)
-                    buffer = new byte[] { 0x90, 0x90, 0x90, 0x90, 0x90, 0x90 };
-                bw.Seek(0xE0382, SeekOrigin.Begin);
-                bw.Write(buffer);
-                buffer = new byte[] { 0x40 };
-                if (checkBoxFirstPersonMovement.Checked)
-                    buffer = new byte[] { 0xC0 };
-                bw.Seek(0x1C7, SeekOrigin.Begin);
-                bw.Write(buffer);
-                buffer = new byte[] { 0xE8, 0xA8, 0xC2, 0xFF, 0xFF };
-                if (checkBoxFirstPersonMovement.Checked)
-                    buffer = new byte[] { 0xE9, 0xFC, 0x69, 0x1F, 0x00 };
-                bw.Seek(0xE0AD3, SeekOrigin.Begin);
-                bw.Write(buffer);
-                buffer = new byte[] { 0x2D, 0x13, 0x27, 0x00, 0x00 };
-                if (checkBoxFirstPersonMovement.Checked)
-                    buffer = new byte[] { 0xE8, 0x1F, 0x6B, 0x1F, 0x00 };
-                bw.Seek(0xE09C4, SeekOrigin.Begin);
-                bw.Write(buffer);
-                buffer = new byte[36];
-                if (checkBoxFirstPersonMovement.Checked)
-                    buffer = new byte[] {
-                        0xC7, 0x05, 0xC0, 0x4F, 0x6F, 0x00, 0x00, 0x00, 0xF0, 0x42,
-                        0xE8, 0x9D, 0x58, 0xE0, 0xFF,
-                        0xE9, 0xF0, 0x95, 0xE0, 0xFF,
-                        0xC7, 0x05, 0xC0, 0x4F, 0x6F, 0x00, 0x00, 0x00, 0x16, 0x43,
-                        0x2D, 0x13, 0x27, 0x00, 0x00,
-                        0xC3 };
-                bw.Seek(0x2D74D4, SeekOrigin.Begin);
-                bw.Write(buffer);
+                foreach (var patch in Patches.AllowFirstPersonMovement)
+                    patch.Apply(writer, !checkBoxFirstPersonMovement.Checked);
 
-                buffer = new byte[] { 0x84, 0xC0, 0x0F, 0x84, 0x53, 0xFF, 0xFF, 0xFF };
-                if (checkBoxFirstPersonAnywhere.Checked)
-                    buffer = new byte[] { 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90, 0x90 };
-                bw.Seek(0xE0AD8, SeekOrigin.Begin);
-                bw.Write(buffer);
+                Patches.AllowFirstPersonAnywhere.Apply(writer, !checkBoxFirstPersonAnywhere.Checked);
 
-                buffer = new byte[] { 0x12 };
-                if (checkBoxFlight.Checked)
-                    buffer = new byte[] { 0x00 };
-                bw.Seek(0x124FED, SeekOrigin.Begin);
-                bw.Write(buffer);
+                Patches.EnableFlight.Apply(writer, !checkBoxFlight.Checked);
             }
 
-            using (var bw = new BinaryWriter(new FileStream($@"{gameFolder}\Media\Characters\Bloom\Player.spt", FileMode.Open)))
+            using (var writer = new BinaryWriter(playerSptInfo.OpenWrite()))
             {
-                var elevationMinimum = 0.0f;
-                if (checkBoxLookingUp.Checked)
-                    elevationMinimum = -1.0f;
-                bw.Seek(0x5B4, SeekOrigin.Begin);
-                bw.Write(elevationMinimum);
+                Patches.AllowLookingUp.Apply(writer, !checkBoxLookingUp.Checked);
             }
 
-            const string testCinematicKey = "testCinematic";
-            const string cinematicToTestKey = "cinematicToTest";
-            var testCinematicValue = "false";
-            var cinematicToTestValue = "0";
-            if (checkBoxSkipLogos.Checked)
-            {
-                testCinematicValue = "true";
-                cinematicToTestValue = "82";
-            }
-            var winxIniPath = $@"{gameFolder}\winx.ini";
-            var winxIniLines = new List<string>(File.ReadAllLines(winxIniPath));
-            var testCinematicMissing = true;
-            var cinematicToTestMissing = true;
-            for (int i = 0; i < winxIniLines.Count; i++)
-            {
-                if (winxIniLines[i].StartsWith(testCinematicKey))
-                {
-                    winxIniLines[i] = $"{testCinematicKey}={testCinematicValue}";
-                    testCinematicMissing = false;
-                }
-                else if (winxIniLines[i].StartsWith(cinematicToTestKey))
-                {
-                    winxIniLines[i] = $"{cinematicToTestKey}={cinematicToTestValue}";
-                    cinematicToTestMissing = false;
-                }
-            }
-            if (testCinematicMissing)
-                winxIniLines.Add($"{testCinematicKey}={testCinematicValue}");
-            if (cinematicToTestMissing)
-                winxIniLines.Add($"{cinematicToTestKey}={cinematicToTestValue}");
-            File.WriteAllLines(winxIniPath, winxIniLines.ToArray());
+            Patches.ApplySkipLogos(winxIniInfo, !checkBoxSkipLogos.Checked);
 
-            using (var bw = new BinaryWriter(new FileStream($@"{gameFolder}\Media\Levels\Challenges\star_01.spt", FileMode.Open)))
+            using (var writer = new BinaryWriter(star01SptInfo.OpenWrite()))
             {
-                var time = 70000;
-                if (checkBoxStarChallenges.Checked)
-                    time = 135000;
-                bw.Seek(0x70C, SeekOrigin.Begin);
-                bw.Write(time);
+                Patches.AddTimeInStar01Challenge.Apply(writer, !checkBoxStarChallenges.Checked);
             }
-
-            using (var bw = new BinaryWriter(new FileStream($@"{gameFolder}\Media\Levels\Challenges\star_02.spt", FileMode.Open)))
+            using (var writer = new BinaryWriter(star02SptInfo.OpenWrite()))
             {
-                var time = 75000;
-                if (checkBoxStarChallenges.Checked)
-                    time = 140000;
-                bw.Seek(0x70C, SeekOrigin.Begin);
-                bw.Write(time);
+                Patches.AddTimeInStar02Challenge.Apply(writer, !checkBoxStarChallenges.Checked);
             }
-
-            using (var bw = new BinaryWriter(new FileStream($@"{gameFolder}\Media\Levels\Challenges\star_03.spt", FileMode.Open)))
+            using (var writer = new BinaryWriter(star03SptInfo.OpenWrite()))
             {
-                var time = 135000;
-                if (checkBoxStarChallenges.Checked)
-                    time = 230000;
-                bw.Seek(0x70C, SeekOrigin.Begin);
-                bw.Write(time);
+                Patches.AddTimeInStar03Challenge.Apply(writer, !checkBoxStarChallenges.Checked);
             }
 
             MessageBox.Show(doneMessage);
@@ -194,8 +331,8 @@ $@"Application for game tweaking. After click on ""{buttonApply.Text}"" and game
 
             if (CultureInfo.CurrentCulture.TwoLetterISOLanguageName == "ru")
             {
-                buttonApply.Text = "Применить";
-                buttonHelp.Text = "Помощь";
+                buttonOpen.Text = "Открыть";
+                containerTweaks.Text = "Твики";
                 checkBoxResolution.Text = "Установить разрешение";
                 checkBoxFirstPersonMovement.Text = "Разрешить перемещение с камерой от первого лица";
                 checkBoxFirstPersonAnywhere.Text = "Разрешить камеру от первого лица везде";
@@ -203,7 +340,8 @@ $@"Application for game tweaking. After click on ""{buttonApply.Text}"" and game
                 checkBoxSkipLogos.Text = "Пропускать логотипы при загрузке";
                 checkBoxStarChallenges.Text = "Увеличить время в звёздных испытаниях";
                 checkBoxFlight.Text = "Включить способность к полёту";
-                doneMessage = "Готово!";
+                buttonApply.Text = "Применить";
+                buttonHelp.Text = "Помощь";
                 helpText =
 $@"Программа предназначена для применения твиков к игре. При нажатии кнопки ""{buttonApply.Text}"" и последующем выборе папки игры будут произведены применение выбранных твиков и откат невыбранных ранее применённых.
 
@@ -220,102 +358,75 @@ $@"Программа предназначена для применения т�
 ""{checkBoxStarChallenges.Text}"": какой садомазохист устанавливал таймеры в этих испытниях? Данный твик даёт достаточно времени на сбор всех звёзд.
 
 ""{checkBoxFlight.Text}"": Блум, вообще-то, фея, и ей положено летать (хотя в условиях этой игры такой твик будет скорее читом). Чтобы подняться вверх, нажмите (не зажмите!) кнопку прыжка. Находясь в воздухе, Блум будет медленно терять высоту. Чтобы ускорить падение, зажмите кнопку щита или атакуйте (в Алфее не работает). Взлетать слишком высоко не рекомендуется, так как ненароком можно застрять в небесной тверди. Анимация, к сожалению, дёрганная.";
+                linkGitHub.Text = "Страница GitHub";
+                doneMessage = "Готово!";
+                errorCaption = "Ошибка";
+                warningCaption = "Внимание";
+                infoCaption = "Уведомление";
+                folderErrorMessage = "Выбранная папка не является допустимой папкой игры Winx Club";
+                dataInconsistencyWarningMessage = "Проверка данных прошла неудачно. При продолжении есть риск повреждения данных в выбранной папке";
+                resolutionWarningMessage = "Обнаружено неподдерживаемое разрешение. Будет установлено разрешение по умолчанию";
+                versionInfoMessage = "Обнаружены старые твики. Они будут обновлены";
             }
 
             int i = 0;
-            foreach (var resolution in DisplayModesHelper.GetSupportedResolutions())
+            foreach (var resolution in GetSupportedResolutions())
             {
-                if ($"{resolution}".Length < 0xC)
+                if ($"{resolution}".Length < Resolution.MaximumStringLength && resolution.Size != vanillaResolution.Size)
                 {
                     inputResolution.Items.Add(resolution);
-                    if (Screen.PrimaryScreen.Bounds.Size == resolution.Size)
-                        inputResolution.SelectedIndex = i;
+                    if (Screen.PrimaryScreen.Bounds.Size == resolution.Size && resolutionIndex == -1 ||
+                        passedResolutionSize == resolution.Size)
+                        resolutionIndex = i;
                     i++;
                 }
             }
-
-            checkBoxResolution.Checked = tweaks[0];
-            if (resolutionIndex >= -1 && resolutionIndex < inputResolution.Items.Count)
-                inputResolution.SelectedIndex = resolutionIndex;
-            checkBoxFirstPersonMovement.Checked = tweaks[1];
-            checkBoxFirstPersonAnywhere.Checked = tweaks[2];
-            checkBoxLookingUp.Checked = tweaks[3];
-            checkBoxSkipLogos.Checked = tweaks[4];
-            checkBoxStarChallenges.Checked = tweaks[5];
-            checkBoxFlight.Checked = tweaks[6];
+            LoadSettings();
         }
 
         private void MainForm_Shown(object sender, EventArgs e)
         {
-            if (Directory.Exists(folderToApply))
-                Apply(folderToApply);
+            if (Directory.Exists(gameFolder))
+            {
+                if (!ExamineGameFolder())
+                    return;
+                if (mode == "apply")
+                    Apply();
+            }
+        }
+
+        private void ButtonOpen_Click(object sender, EventArgs e)
+        {
+            PickGameFolder();
         }
 
         private void ButtonApply_Click(object sender, EventArgs e)
         {
-            string gameFolder;
-            if (Environment.OSVersion.Version.Major >= 6)
-            {
-                var dialog = new FolderPicker();
-                if (dialog.ShowDialog() != DialogResult.OK)
-                    return;
-                gameFolder = dialog.SelectedPath;
-            }
-            else
-            {
-                var dialog = new FolderBrowserDialog { ShowNewFolderButton = false };
-                if (dialog.ShowDialog() != DialogResult.OK)
-                    return;
-                gameFolder = dialog.SelectedPath;
-            }
-
-            try
-            {
-                using (var stream = new FileStream($@"{gameFolder}\WinxClub.exe", FileMode.Open)) { }
-            }
-            catch (UnauthorizedAccessException)
-            {
-                var processStartInfo = new ProcessStartInfo(System.Reflection.Assembly.GetExecutingAssembly().GetName().Name)
-                {
-                    Verb = "runas",
-                    Arguments = $"\"{gameFolder}\" " +
-                    $"{Convert.ToByte(checkBoxResolution.Checked)}" +
-                    $"{Convert.ToByte(checkBoxFirstPersonMovement.Checked)}" +
-                    $"{Convert.ToByte(checkBoxFirstPersonAnywhere.Checked)}" +
-                    $"{Convert.ToByte(checkBoxLookingUp.Checked)}" +
-                    $"{Convert.ToByte(checkBoxSkipLogos.Checked)}" +
-                    $"{Convert.ToByte(checkBoxStarChallenges.Checked)}" +
-                    $"{Convert.ToByte(checkBoxFlight.Checked)}" +
-                    $" {inputResolution.SelectedIndex}"
-                };
-                try
-                {
-                    Process.Start(processStartInfo);
-                    Application.Exit();
-                }
-                catch (Win32Exception ex)
-                {
-                    if (ex.ErrorCode != unchecked((int)0x80004005))
-                        throw ex;
-                }
-                return;
-            }
-
-            Apply(gameFolder);
+            Apply();
         }
 
         private void ButtonHelp_Click(object sender, EventArgs e)
         {
             MessageBox.Show(
-$@"Winx Club Tweak Center 2.0
+$@"Winx Club Tweak Center {Application.ProductVersion}
 2022, kindergal2000
 
 {helpText}");
         }
 
+        private void LinkGitHub_LinkClicked(object sender, LinkLabelLinkClickedEventArgs e)
+        {
+            Process.Start("https://github.com/GlobbyBasovich/WinxClubTweakCenter");
+        }
+
         private void CheckBoxResolution_CheckedChanged(object sender, EventArgs e)
         {
-            inputResolution.Enabled = checkBoxResolution.Checked;
+            UpdateInputResolution();
+        }
+
+        private void InputResolution_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            buttonApply.Enabled = containerTweaks.Enabled && inputResolution.SelectedIndex != -1;
         }
     }
 }

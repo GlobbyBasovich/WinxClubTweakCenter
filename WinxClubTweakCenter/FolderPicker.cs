@@ -27,60 +27,72 @@ namespace WinxClubTweakCenter
 
         public virtual DialogResult ShowDialog(bool throwOnError = false)
         {
-            var dialog = (IFileOpenDialog)new FileOpenDialog();
-            if (!string.IsNullOrEmpty(InputPath))
+            try
             {
-                if (CheckHr(SHCreateItemFromParsingName(InputPath, null, typeof(IShellItem).GUID, out var item), throwOnError) != 0)
-                    return DialogResult.Abort;
+                var dialog = (IFileOpenDialog)new FileOpenDialog();
+                if (!string.IsNullOrEmpty(InputPath))
+                {
+                    if (CheckHr(SHCreateItemFromParsingName(InputPath, null, typeof(IShellItem).GUID, out var item), throwOnError) != 0)
+                        return DialogResult.Abort;
 
-                dialog.SetFolder(item);
-            }
+                    dialog.SetFolder(item);
+                }
 
-            var options = FOS.FOS_PICKFOLDERS;
-            options = (FOS)SetOptions((int)options);
-            dialog.SetOptions(options);
+                var options = FOS.FOS_PICKFOLDERS;
+                options = (FOS)SetOptions((int)options);
+                dialog.SetOptions(options);
 
-            if (Title != null)
-            {
-                dialog.SetTitle(Title);
-            }
+                if (Title != null)
+                {
+                    dialog.SetTitle(Title);
+                }
 
-            if (OkButtonLabel != null)
-            {
-                dialog.SetOkButtonLabel(OkButtonLabel);
-            }
+                if (OkButtonLabel != null)
+                {
+                    dialog.SetOkButtonLabel(OkButtonLabel);
+                }
 
-            if (FileNameLabel != null)
-            {
-                dialog.SetFileName(FileNameLabel);
-            }
+                if (FileNameLabel != null)
+                {
+                    dialog.SetFileName(FileNameLabel);
+                }
 
-            var owner = Process.GetCurrentProcess().MainWindowHandle;
+                var owner = Process.GetCurrentProcess().MainWindowHandle;
                 if (owner == IntPtr.Zero)
                 {
                     owner = GetDesktopWindow();
                 }
 
-            var hr = dialog.Show(owner);
-            if (hr == ERROR_CANCELLED)
-                return DialogResult.Cancel;
+                var hr = dialog.Show(owner);
+                if (hr == ERROR_CANCELLED)
+                    return DialogResult.Cancel;
 
-            if (CheckHr(hr, throwOnError) != 0)
-                return DialogResult.Abort;
+                if (CheckHr(hr, throwOnError) != 0)
+                    return DialogResult.Abort;
 
-            if (CheckHr(dialog.GetResult(out var result), throwOnError) != 0)
-                return DialogResult.Abort;
+                if (CheckHr(dialog.GetResult(out var result), throwOnError) != 0)
+                    return DialogResult.Abort;
 
-            if (CheckHr(result.GetDisplayName(SIGDN.SIGDN_DESKTOPABSOLUTEPARSING, out var path), throwOnError) != 0)
-                return DialogResult.Abort;
+                if (CheckHr(result.GetDisplayName(SIGDN.SIGDN_DESKTOPABSOLUTEPARSING, out var path), throwOnError) != 0)
+                    return DialogResult.Abort;
 
-            SelectedPath = path;
+                SelectedPath = path;
 
-            if (CheckHr(result.GetDisplayName(SIGDN.SIGDN_DESKTOPABSOLUTEEDITING, out path), false) == 0)
-            {
-                ResultName = path;
+                if (CheckHr(result.GetDisplayName(SIGDN.SIGDN_DESKTOPABSOLUTEEDITING, out path), false) == 0)
+                {
+                    ResultName = path;
+                }
+                return DialogResult.OK;
             }
-            return DialogResult.OK;
+            catch (COMException ex)
+            {
+                if (ex.ErrorCode != unchecked((int)0x80040154))
+                    throw ex;
+                var dialog = new FolderBrowserDialog { ShowNewFolderButton = false };
+                var result = dialog.ShowDialog();
+                SelectedPath = dialog.SelectedPath;
+                return result;
+            }
         }
 
         private static int CheckHr(int hr, bool throwOnError)

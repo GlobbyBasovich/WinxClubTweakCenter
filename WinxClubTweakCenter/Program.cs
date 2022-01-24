@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Drawing;
 using System.Linq;
 using System.Windows.Forms;
 
@@ -13,23 +14,34 @@ namespace WinxClubTweakCenter
         [STAThread]
         static void Main(string[] args)
         {
+            var mode = "start";
             string folder = null;
             var tweaks = new bool[7];
-            var resolutionIndex = -2;
-
-            if (args.Length == 3 &&
-                args[1].Count(c => c == '0') + args[1].Count(c => c == '1') == args[1].Length &&
-                args[1].Length == tweaks.Length &&
-                int.TryParse(args[2], out resolutionIndex))
+            Size resolutionSize = new Size(0, 0);
+            if (args.Length == 4)
             {
-                folder = args[0];
-                for (int i = 0; i < args[1].Length; i++)
-                    tweaks[i] = args[1][i] == '1';
+                mode = args[0];
+                folder = args[1];
+                var tweaksString = args[2];
+                if (tweaksString.Count(c => c == '0') + tweaksString.Count(c => c == '1') == tweaksString.Length &&
+                tweaksString.Length == tweaks.Length)
+                {
+                    for (int i = 0; i < tweaksString.Length; i++)
+                        tweaks[i] = tweaksString[i] == '1';
+                }
+                var resolutionString = args[3];
+                var resolutionStringParts = resolutionString.Split('x');
+                if (resolutionStringParts.Length == 2 &&
+                    int.TryParse(resolutionStringParts[0], out int resolutionWidth) &&
+                    int.TryParse(resolutionStringParts[1], out int resolutionHeight))
+                {
+                    resolutionSize = new Size(resolutionWidth, resolutionHeight);
+                }
             }
 
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
-            Application.Run(new MainForm(folder, tweaks, resolutionIndex));
+            Application.Run(new MainForm(mode, folder, tweaks, resolutionSize));
         }
     }
 }
