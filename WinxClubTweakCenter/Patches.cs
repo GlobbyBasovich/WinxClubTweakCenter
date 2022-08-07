@@ -176,6 +176,8 @@ namespace WinxClubTweakCenter
             new ResolutionOffsetPair(0xE7777, 0xE777F),
         };
         private static readonly int resolutionStringOffset = 0x30ED8C;
+        private static readonly int fieldOfViewOffset = 0x33F100;
+        private static readonly float squareResolutionFov = 0.01308997f;
         public static Patch[] GetResolutionPatches(Resolution resolution)
         {
             byte[]
@@ -188,6 +190,8 @@ namespace WinxClubTweakCenter
                 result.Add(new Patch(pair.HeightOffset, heightData));
             }
             result.Add(new Patch(resolutionStringOffset, Encoding.ASCII.GetBytes($"{resolution}\0")));
+            var fovData = BitConverter.GetBytes(squareResolutionFov * resolution.Size.Width / resolution.Size.Height);
+            result.Add(new Patch(fieldOfViewOffset, fovData));
             return result.ToArray();
         }
         public static bool TryGetCurrentResolution(BinaryReader reader, out Resolution resolution)
