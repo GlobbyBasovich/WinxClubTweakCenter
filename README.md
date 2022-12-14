@@ -1,7 +1,7 @@
 # Winx Club Tweak Center
 Application for tweaking Winx Club The Game
 
-Feautures:
+Features:
  - Set resolution
  - Allow first person camera movement
  - Allow first person camera anywhere
